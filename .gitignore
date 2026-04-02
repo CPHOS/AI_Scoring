@@ -1,0 +1,11 @@
+.env
+/.venv
+/test-figs
+*.md
+!README.md
+*.json
+*.pdf
+*.tex
+/student_viewer_build
+/student-viewer
+/std-sol-converter
