@@ -1,11 +1,11 @@
 .env
-/.venv
-/test-figs
+.venv/
+__pycache__/
+*.pyc
+/test-figs/
+/output/
 *.md
 !README.md
 *.json
 *.pdf
 *.tex
-/student_viewer_build
-/student-viewer
-/std-sol-converter

@@ -6,10 +6,12 @@ import urllib.error
 import urllib.request
 from typing import Any
 
-from .config import Settings
+from src.config import Settings
 
 
 class OpenRouterClient:
+    """OpenRouter API 客户端."""
+
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
 

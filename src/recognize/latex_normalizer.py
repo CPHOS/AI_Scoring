@@ -19,4 +19,7 @@ def normalize_transcription(text: str) -> str:
 
 
 def _normalize_unit_spacing(text: str) -> str:
-    return _TEXT_UNIT_RE.sub(lambda match: f"${match.group(1)}\\text{{{match.group(2).strip()}}}{match.group(3)}$", text)
+    return _TEXT_UNIT_RE.sub(
+        lambda match: f"${match.group(1)}\\text{{{match.group(2).strip()}}}{match.group(3)}$",
+        text,
+    )

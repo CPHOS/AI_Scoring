@@ -18,7 +18,7 @@ class Settings:
     timeout_seconds: int = 120
     max_retries: int = 2
     site_url: str | None = None
-    app_name: str = "cphos-vlm-converter"
+    app_name: str = "cphos-ai-scoring"
     debug_save_raw_response: bool = False
 
 
@@ -38,7 +38,7 @@ def load_settings() -> Settings:
         timeout_seconds=_read_int("OPENROUTER_TIMEOUT_SECONDS", 120),
         max_retries=_read_int("OPENROUTER_MAX_RETRIES", 2),
         site_url=os.getenv("OPENROUTER_SITE_URL", "").strip() or None,
-        app_name=os.getenv("OPENROUTER_APP_NAME", "cphos-vlm-converter").strip() or "cphos-vlm-converter",
+        app_name=os.getenv("OPENROUTER_APP_NAME", "cphos-ai-scoring").strip() or "cphos-ai-scoring",
         debug_save_raw_response=_read_bool("VLM_DEBUG_SAVE_RAW_RESPONSE", False),
     )
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .types import InputAsset
+from src.model.types import InputAsset
 
 
 SYSTEM_PROMPT = """Role: Senior Physics and Mathematics OCR Specialist.

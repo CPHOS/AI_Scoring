@@ -6,14 +6,15 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import load_settings
+from src.config import load_settings
+from src.client.openrouter import OpenRouterClient
+from src.model.types import TranscriptionResult
+
 from .input_processing import load_inputs
 from .latex_normalizer import normalize_transcription
-from .openrouter_client import OpenRouterClient
 from .prompt_builder import build_messages
 from .request_id import build_request_id
 from .response_parser import extract_text_content
-from .types import TranscriptionResult
 from .validation import validate_transcription
 
 
@@ -39,13 +40,12 @@ def _extract_usage(raw_response: dict[str, object]) -> dict[str, object]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _build_frontmatter(result: TranscriptionResult, warnings: list[str]) -> str:
-    """Build YAML frontmatter string from a TranscriptionResult."""
     lines = ["---"]
     lines.append(f"source_files: {json.dumps(result.source_files, ensure_ascii=False)}")
-    lines.append(f"request_id: \"{result.request_id}\"")
-    lines.append(f"model: \"{result.model}\"")
-    lines.append(f"provider: \"{result.provider}\"")
-    lines.append(f"timestamp: \"{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}\"")
+    lines.append(f'request_id: "{result.request_id}"')
+    lines.append(f'model: "{result.model}"')
+    lines.append(f'provider: "{result.provider}"')
+    lines.append(f'timestamp: "{datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}"')
 
     usage = result.usage
     if usage:
@@ -53,7 +53,7 @@ def _build_frontmatter(result: TranscriptionResult, warnings: list[str]) -> str:
             if key in usage:
                 lines.append(f"{key}: {usage[key]}")
         if "generation_id" in usage:
-            lines.append(f"generation_id: \"{usage['generation_id']}\"")
+            lines.append(f'generation_id: "{usage["generation_id"]}"')
 
     if warnings:
         lines.append(f"warnings: {json.dumps(warnings, ensure_ascii=False)}")
@@ -63,7 +63,6 @@ def _build_frontmatter(result: TranscriptionResult, warnings: list[str]) -> str:
 
 
 def _build_markdown(result: TranscriptionResult, warnings: list[str]) -> str:
-    """Assemble the full markdown document: frontmatter + VLM output."""
     frontmatter = _build_frontmatter(result, warnings)
     return f"{frontmatter}\n\n{result.transcription}\n"
 
@@ -192,7 +191,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> int:
+def cli_main() -> int:
     parser = build_arg_parser()
     args = parser.parse_args()
     try:

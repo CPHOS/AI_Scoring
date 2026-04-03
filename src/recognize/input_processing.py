@@ -5,7 +5,7 @@ import io
 import mimetypes
 from pathlib import Path
 
-from .types import InputAsset
+from src.model.types import InputAsset
 
 
 SUPPORTED_IMAGE_TYPES = {"image/jpeg", "image/png"}
@@ -73,7 +73,7 @@ def _load_pdf(path: Path, source_index: int, scale: float) -> list[InputAsset]:
         import pypdfium2 as pdfium
     except ImportError as exc:
         raise RuntimeError(
-            "PDF support requires pypdfium2 and Pillow. Install dependencies from requirements.txt."
+            "PDF support requires pypdfium2 and Pillow. Install with: uv sync"
         ) from exc
 
     document = pdfium.PdfDocument(str(path))
