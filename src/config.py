@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from dotenv import find_dotenv, load_dotenv
 
 
-DEFAULT_MODEL = "google/gemini-2.5-flash-lite"
+DEFAULT_MODEL = "google/gemma-4-31b-it"
 DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
 
@@ -48,6 +48,56 @@ def _read_int(name: str, default: int) -> int:
     if not raw:
         return default
     return int(raw)
+
+
+def load_judge_settings() -> Settings:
+    """Load settings for the judge module.
+
+    Uses JUDGE_MODEL / JUDGE_TIMEOUT_SECONDS when set,
+    otherwise falls back to the common OpenRouter values.
+    """
+    base = load_settings()
+
+    model = os.getenv("JUDGE_MODEL", "").strip() or base.model
+    timeout = _read_int("JUDGE_TIMEOUT_SECONDS", base.timeout_seconds)
+
+    return Settings(
+        api_key=base.api_key,
+        model=model,
+        base_url=base.base_url,
+        timeout_seconds=timeout,
+        max_retries=base.max_retries,
+        site_url=base.site_url,
+        app_name=base.app_name,
+        debug_save_raw_response=base.debug_save_raw_response,
+    )
+
+
+def load_direct_vlm_settings() -> Settings:
+    """Load settings for the DirectVLM module.
+
+    Uses DIRECT_VLM_MODEL / DIRECT_VLM_TIMEOUT_SECONDS when set,
+    otherwise falls back to the common OpenRouter values.
+    Defaults to google/gemini-3.1-pro-preview.
+    """
+    base = load_settings()
+
+    model = (
+        os.getenv("DIRECT_VLM_MODEL", "").strip()
+        or "google/gemini-3.1-pro-preview"
+    )
+    timeout = _read_int("DIRECT_VLM_TIMEOUT_SECONDS", base.timeout_seconds)
+
+    return Settings(
+        api_key=base.api_key,
+        model=model,
+        base_url=base.base_url,
+        timeout_seconds=timeout,
+        max_retries=base.max_retries,
+        site_url=base.site_url,
+        app_name=base.app_name,
+        debug_save_raw_response=base.debug_save_raw_response,
+    )
 
 
 def _read_bool(name: str, default: bool) -> bool:
