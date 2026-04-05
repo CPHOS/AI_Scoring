@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -9,7 +10,22 @@ from typing import Any
 
 from src.config import Settings
 
+from .key_pool import KeyPool
+
 logger = logging.getLogger(__name__)
+
+# 模块级 KeyPool 缓存，相同 key 集合共享同一个池
+_pool_cache: dict[tuple[str, ...], KeyPool] = {}
+_pool_lock = threading.Lock()
+
+
+def _get_pool(settings: Settings) -> KeyPool:
+    """获取或创建与 settings.api_keys 对应的 KeyPool（线程安全）."""
+    cache_key = tuple(settings.api_keys)
+    with _pool_lock:
+        if cache_key not in _pool_cache:
+            _pool_cache[cache_key] = KeyPool(list(settings.api_keys))
+        return _pool_cache[cache_key]
 
 
 class OpenRouterClient:
@@ -17,6 +33,7 @@ class OpenRouterClient:
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
+        self._pool = _get_pool(settings)
 
     def create_chat_completion(self, messages: list[dict[str, object]]) -> dict[str, Any]:
         payload = {
@@ -26,18 +43,19 @@ class OpenRouterClient:
         body = json.dumps(payload).encode("utf-8")
         url = f"{self._settings.base_url.rstrip('/')}/chat/completions"
 
-        headers = {
-            "Authorization": f"Bearer {self._settings.api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": self._settings.site_url or "https://localhost",
-            "X-Title": self._settings.app_name,
-        }
-
         last_error: Exception | None = None
         for attempt in range(self._settings.max_retries + 1):
+            api_key = self._pool.acquire()
+            headers = {
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": self._settings.site_url or "https://localhost",
+                "X-Title": self._settings.app_name,
+            }
             request = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
             try:
-                logger.debug("API 请求  model=%s  attempt=%d", self._settings.model, attempt + 1)
+                logger.debug("API 请求  model=%s  attempt=%d  key=...%s",
+                             self._settings.model, attempt + 1, api_key[-6:])
                 with urllib.request.urlopen(request, timeout=self._settings.timeout_seconds) as response:
                     result = json.loads(response.read().decode("utf-8"))
                     logger.debug("API 响应  id=%s", result.get("id", "?"))
@@ -45,16 +63,20 @@ class OpenRouterClient:
             except urllib.error.HTTPError as exc:
                 detail = _read_error_detail(exc)
                 last_error = RuntimeError(f"HTTP {exc.code}: {detail}")
-                logger.warning("API HTTP 错误 %d  attempt=%d: %s", exc.code, attempt + 1, detail[:200])
+                logger.warning("API HTTP 错误 %d  attempt=%d  key=...%s: %s",
+                               exc.code, attempt + 1, api_key[-6:], detail[:200])
+                self._pool.report_failure(api_key)
                 if attempt >= self._settings.max_retries:
                     break
-                time.sleep(min(2 ** attempt, 4))
+                time.sleep(self._settings.retry_delay * (2 ** attempt))
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
                 last_error = exc
-                logger.warning("API 网络错误  attempt=%d: %s", attempt + 1, exc)
+                logger.warning("API 网络错误  attempt=%d  key=...%s: %s",
+                               attempt + 1, api_key[-6:], exc)
+                self._pool.report_failure(api_key)
                 if attempt >= self._settings.max_retries:
                     break
-                time.sleep(min(2 ** attempt, 4))
+                time.sleep(self._settings.retry_delay * (2 ** attempt))
 
         raise RuntimeError(f"OpenRouter request failed: {last_error}")
 

@@ -53,7 +53,12 @@ def handle_load_input(ctx: PipelineContext) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def handle_parse_rubric(ctx: PipelineContext) -> None:
-    """解析 .tex 标准答案文件."""
+    """解析 .tex 标准答案文件（若 rubric 已预填则跳过）."""
+    if ctx.rubric is not None:
+        logger.info("复用已解析的评分标准: %s  共 %d 个评分点  满分 %d",
+                    ctx.rubric.problem_title, len(ctx.rubric.items), ctx.rubric.total_score)
+        return
+
     from src.judge.answer_parser import parse_scoring_rubric
 
     logger.info("解析标准答案: %s", ctx.standard_path.name)

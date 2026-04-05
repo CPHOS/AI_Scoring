@@ -12,7 +12,7 @@ from pathlib import Path
 from src.pipeline import Pipeline, PipelineContext, PipelineMode
 
 from .output import build_judging_markdown
-from .types import JudgingResult
+from .types import JudgingResult, ScoringRubric
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +64,12 @@ def run_direct_judging(
     output_path: Path | None = None,
     verbosity: int = 1,
     strictness: int = 1,
+    rubric: ScoringRubric | None = None,
 ) -> JudgingResult:
-    """直接用 VLM 读取手写图片并按标准答案评分（一步完成）."""
+    """直接用 VLM 读取手写图片并按标准答案评分（一步完成）.
+
+    传入 *rubric* 可复用已解析的评分标准，避免重复解析。
+    """
     ctx = PipelineContext(
         mode=PipelineMode.DIRECT,
         input_paths=student_paths,
@@ -73,6 +77,7 @@ def run_direct_judging(
         output_path=output_path,
         verbosity=verbosity,
         strictness=strictness,
+        rubric=rubric,
     )
     result = Pipeline().run(ctx)
     if result.error:
@@ -86,8 +91,17 @@ def run_direct_batch_judging(
     output_dir: Path | None = None,
     verbosity: int = 1,
     strictness: int = 1,
+    max_workers: int = 1,
 ) -> dict[str, object]:
-    """批量处理：对目录中的每张图片分别做直接 VLM 判卷."""
+    """批量处理：对目录中的每张图片分别做直接 VLM 判卷.
+
+    评分标准只解析一次，所有图片共享同一份 rubric。
+    *max_workers* > 1 时启用并发。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from src.judge.answer_parser import parse_scoring_rubric
+
     if not input_dir.exists():
         raise FileNotFoundError(f"Input directory does not exist: {input_dir}")
     if not input_dir.is_dir():
@@ -100,6 +114,11 @@ def run_direct_batch_judging(
     if not files:
         raise ValueError(f"No supported input files found in directory: {input_dir}")
 
+    # 只解析一次评分标准
+    rubric = parse_scoring_rubric(standard_path)
+    logger.info("批量评分: 共 %d 个文件，评分标准已解析 (%s)，并发=%d",
+                len(files), rubric.problem_title, max_workers)
+
     effective_output_dir = output_dir if output_dir is not None else input_dir
     effective_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -109,16 +128,16 @@ def run_direct_batch_judging(
     total_completion = 0
     total_tokens = 0
 
-    for path in files:
+    def _score_one(path: Path) -> tuple[str, dict[str, object] | None, dict[str, str] | None]:
         image_id = path.name
         md_name = path.stem + "_direct.md"
         md_path = effective_output_dir / md_name
-
         print(f"  Processing (DirectVLM): {image_id} ...", file=sys.stderr)
         try:
             result = run_direct_judging(
                 [path], standard_path, output_path=md_path,
                 verbosity=verbosity, strictness=strictness,
+                rubric=rubric,
             )
             usage = result.usage
             entry: dict[str, object] = {
@@ -130,13 +149,43 @@ def run_direct_batch_judging(
             }
             if usage:
                 entry["usage"] = usage
-                total_prompt += int(usage.get("prompt_tokens", 0))
-                total_completion += int(usage.get("completion_tokens", 0))
-                total_tokens += int(usage.get("total_tokens", 0))
-            results.append(entry)
-
+            return image_id, entry, None
         except Exception as exc:
-            failures.append({"id": image_id, "error": str(exc)})
+            return image_id, None, {"id": image_id, "error": str(exc)}
+
+    if max_workers <= 1:
+        # 串行
+        for path in files:
+            _, entry, fail = _score_one(path)
+            if entry is not None:
+                results.append(entry)
+            if fail is not None:
+                failures.append(fail)
+    else:
+        # 并发 — 收集结果后统一合并，避免 list.append 竞争
+        futures = {}
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for path in files:
+                fut = executor.submit(_score_one, path)
+                futures[fut] = path
+
+            for fut in as_completed(futures):
+                _, entry, fail = fut.result()
+                if entry is not None:
+                    results.append(entry)
+                if fail is not None:
+                    failures.append(fail)
+
+        # 恢复文件名排序
+        results.sort(key=lambda e: str(e["id"]).lower())
+        failures.sort(key=lambda e: e["id"].lower())
+
+    for entry in results:
+        usage = entry.get("usage")
+        if usage and isinstance(usage, dict):
+            total_prompt += int(usage.get("prompt_tokens", 0))
+            total_completion += int(usage.get("completion_tokens", 0))
+            total_tokens += int(usage.get("total_tokens", 0))
 
     summary: dict[str, object] = {
         "mode": "direct_vlm",

@@ -13,14 +13,20 @@ DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 
 @dataclass(frozen=True)
 class Settings:
-    api_key: str
+    api_keys: list[str]
     model: str
     base_url: str = DEFAULT_BASE_URL
     timeout_seconds: int = 120
     max_retries: int = 2
+    retry_delay: float = 1.0
     site_url: str | None = None
     app_name: str = "cphos-ai-scoring"
     debug_save_raw_response: bool = False
+
+    @property
+    def api_key(self) -> str:
+        """兼容旧代码：返回第一个 key."""
+        return self.api_keys[0]
 
 
 _ENV_LOADED = False
@@ -58,9 +64,10 @@ def _ensure_env() -> None:
 
 
 def _build_settings(profile: str) -> Settings:
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if not api_key:
+    raw_keys = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not raw_keys:
         raise ValueError("Missing OPENROUTER_API_KEY environment variable or .env entry")
+    api_keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
 
     vlm_model = os.getenv("VLM_MODEL", "").strip()
     judge_model = os.getenv("JUDGE_MODEL", "").strip()
@@ -83,11 +90,12 @@ def _build_settings(profile: str) -> Settings:
         timeout = base_timeout
 
     return Settings(
-        api_key=api_key,
+        api_keys=api_keys,
         model=model,
         base_url=os.getenv("OPENROUTER_BASE_URL", DEFAULT_BASE_URL).strip() or DEFAULT_BASE_URL,
         timeout_seconds=timeout,
         max_retries=_read_int("OPENROUTER_MAX_RETRIES", 2),
+        retry_delay=_read_float("OPENROUTER_RETRY_DELAY", 1.0),
         site_url=os.getenv("OPENROUTER_SITE_URL", "").strip() or None,
         app_name=os.getenv("OPENROUTER_APP_NAME", "cphos-ai-scoring").strip() or "cphos-ai-scoring",
         debug_save_raw_response=_read_bool("VLM_DEBUG_SAVE_RAW_RESPONSE", False),
@@ -99,6 +107,13 @@ def _read_int(name: str, default: int) -> int:
     if not raw:
         return default
     return int(raw)
+
+
+def _read_float(name: str, default: float) -> float:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return default
+    return float(raw)
 
 
 def _read_bool(name: str, default: bool) -> bool:

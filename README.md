@@ -193,12 +193,16 @@ uv run ai-scoring direct image.png --standard answer.tex -o score.md
 
 # 批量
 uv run ai-scoring direct --input-dir ./images --standard answer.tex -o ./output/
+
+# 批量 + 4 线程并发
+uv run ai-scoring direct --input-dir ./images --standard answer.tex -o ./output/ --concurrency 4
 ```
 
 | 参数 | 说明 | 可选值 |
 |:---|:---|:---|
 | `--verbosity` | 评分详细程度 | `0` 仅分数，`1` 简要说明（默认），`2` 完整推理 |
 | `--strictness` | 阅卷严厉程度 | `0` 宽松，`1` 混合（默认），`2` 严格 |
+| `--concurrency` | 批量评分并发线程数 | 正整数，默认 `1`（串行） |
 
 **严厉程度说明：**
 
@@ -214,12 +218,13 @@ uv run ai-scoring direct --input-dir ./images --standard answer.tex -o ./output/
 
 | 变量 | 说明 | 默认值 |
 |:---|:---|:---|
-| `OPENROUTER_API_KEY` | OpenRouter API 密钥 | （必填） |
+| `OPENROUTER_API_KEY` | OpenRouter API 密钥，多个用英文逗号分隔 | （必填） |
 | `VLM_MODEL` | VLM 模型（recognize / direct） | （必填） |
 | `JUDGE_MODEL` | 判卷模型（judge） | （必填） |
 | `OPENROUTER_BASE_URL` | API 端点 | `https://openrouter.ai/api/v1` |
 | `OPENROUTER_TIMEOUT_SECONDS` | 请求超时（秒） | `120` |
 | `OPENROUTER_MAX_RETRIES` | 最大重试次数 | `2` |
+| `OPENROUTER_RETRY_DELAY` | 重试基础间隔（秒，指数退避） | `1.0` |
 | `JUDGE_TIMEOUT_SECONDS` | Judge 请求超时 | 同 `OPENROUTER_TIMEOUT_SECONDS` |
 | `DIRECT_VLM_TIMEOUT_SECONDS` | Direct 请求超时 | 同 `OPENROUTER_TIMEOUT_SECONDS` |
 
@@ -271,6 +276,12 @@ uv run python tests/benchmark.py --skip-scoring
 
 # 指定严厉程度
 uv run python tests/benchmark.py --strictness 2
+
+# 随机抽取最多 50 个样本
+uv run python tests/benchmark.py --max-samples 50
+
+# 4 线程并发评分
+uv run python tests/benchmark.py --concurrency 4
 ```
 
 评分结果输出到 `tests/results/<case_name>/`，包含逐项评分 Markdown 和统计摘要 `_benchmark.json`。

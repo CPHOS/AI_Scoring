@@ -37,49 +37,81 @@ def _scoring_entry(score: int, duration: float = 0.0) -> dict:
 
 def run_ai_scoring_direct(
     case_dir: Path, output_dir: Path, verbosity: int, strictness: int,
+    images: list[Path] | None = None,
+    max_workers: int = 1,
 ) -> dict[str, dict]:
-    """对一个 case 目录执行 direct 模式批改，返回 {filename: {score, duration}}。"""
+    """对一个 case 目录执行 direct 模式批改，返回 {filename: {score, duration}}。
+
+    传入 *images* 可指定仅评分的图片列表（用于采样模式）。
+    *max_workers* > 1 时启用并发。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    from src.judge.answer_parser import parse_scoring_rubric
     from src.judge.service import run_direct_judging
 
     standard_path = case_dir / "main.tex"
-    images = sorted(
-        [p for p in case_dir.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES],
-        key=lambda f: f.name.lower(),
-    )
+    if images is None:
+        images = sorted(
+            [p for p in case_dir.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES],
+            key=lambda f: f.name.lower(),
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    ai_results: dict[str, dict] = {}
-    for img in images:
+    # 只解析一次评分标准
+    rubric = parse_scoring_rubric(standard_path)
+
+    def _score(img: Path) -> tuple[str, dict]:
         md_path = output_dir / f"{img.stem}_direct.md"
         print(f"    Scoring: {img.name} ...", file=sys.stderr)
         try:
             result = run_direct_judging(
                 [img], standard_path, output_path=md_path,
                 verbosity=verbosity, strictness=strictness,
+                rubric=rubric,
             )
-            ai_results[img.name] = _scoring_entry(result.total_score, result.duration_seconds)
+            return img.name, _scoring_entry(result.total_score, result.duration_seconds)
         except Exception as exc:
             print(f"    ERROR: {img.name}: {exc}", file=sys.stderr)
-            ai_results[img.name] = _scoring_entry(-1)
+            return img.name, _scoring_entry(-1)
+
+    ai_results: dict[str, dict] = {}
+    if max_workers <= 1:
+        for img in images:
+            name, entry = _score(img)
+            ai_results[name] = entry
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_score, img): img for img in images}
+            for fut in as_completed(futures):
+                name, entry = fut.result()
+                ai_results[name] = entry
     return ai_results
 
 
 def run_ai_scoring_two_step(
     case_dir: Path, output_dir: Path, verbosity: int, strictness: int,
+    images: list[Path] | None = None,
+    max_workers: int = 1,
 ) -> dict[str, dict]:
-    """两步模式：先 recognize 再 judge，返回 {filename: {score, duration}}。"""
+    """两步模式：先 recognize 再 judge，返回 {filename: {score, duration}}。
+
+    *max_workers* > 1 时启用并发。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     from src.judge.service import run_judging
     from src.recognize.service import run_transcription
 
     standard_path = case_dir / "main.tex"
-    images = sorted(
-        [p for p in case_dir.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES],
-        key=lambda f: f.name.lower(),
-    )
+    if images is None:
+        images = sorted(
+            [p for p in case_dir.iterdir() if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES],
+            key=lambda f: f.name.lower(),
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    ai_results: dict[str, dict] = {}
-    for img in images:
+    def _score(img: Path) -> tuple[str, dict]:
         recog_path = output_dir / f"{img.stem}_recog.md"
         judge_path = output_dir / f"{img.stem}_judge.md"
         t0 = time.perf_counter()
@@ -88,8 +120,7 @@ def run_ai_scoring_two_step(
             run_transcription([img], output_path=recog_path)
         except Exception as exc:
             print(f"    RECOG ERROR: {img.name}: {exc}", file=sys.stderr)
-            ai_results[img.name] = _scoring_entry(-1)
-            continue
+            return img.name, _scoring_entry(-1)
         print(f"    Judge: {img.name} ...", file=sys.stderr)
         try:
             result = run_judging(
@@ -97,10 +128,22 @@ def run_ai_scoring_two_step(
                 verbosity=verbosity, strictness=strictness,
             )
             elapsed = time.perf_counter() - t0
-            ai_results[img.name] = _scoring_entry(result.total_score, elapsed)
+            return img.name, _scoring_entry(result.total_score, elapsed)
         except Exception as exc:
             print(f"    JUDGE ERROR: {img.name}: {exc}", file=sys.stderr)
-            ai_results[img.name] = _scoring_entry(-1)
+            return img.name, _scoring_entry(-1)
+
+    ai_results: dict[str, dict] = {}
+    if max_workers <= 1:
+        for img in images:
+            name, entry = _score(img)
+            ai_results[name] = entry
+    else:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_score, img): img for img in images}
+            for fut in as_completed(futures):
+                name, entry = fut.result()
+                ai_results[name] = entry
     return ai_results
 
 
@@ -360,6 +403,7 @@ def generate_report(
     strictness: int,
     report_path: Path,
     overall_plot_path: Path | None,
+    max_samples: int | None = None,
 ) -> None:
     """生成 report.md 汇总报告。"""
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
@@ -371,6 +415,8 @@ def generate_report(
     lines.append(f"- **评分模式**: `{mode}`")
     lines.append(f"- **严厉程度**: {strictness}")
     lines.append(f"- **测试用例数**: {len(all_stats)}")
+    if max_samples is not None:
+        lines.append(f"- **最大采样数**: {max_samples}")
     lines.append("")
 
     # 归一化散点图
@@ -484,6 +530,14 @@ def main() -> int:
         "--skip-scoring", action="store_true",
         help="跳过 AI 评分，只统计 results/ 下的已有结果",
     )
+    parser.add_argument(
+        "--max-samples", type=int, default=None, metavar="N",
+        help="从所有测试图片中等概率随机抽取最多 N 个样本",
+    )
+    parser.add_argument(
+        "--concurrency", type=int, default=1, metavar="N",
+        help="并发评分线程数 (default: 1, 串行)",
+    )
     args = parser.parse_args()
 
     from src.log import setup_logging
@@ -504,6 +558,38 @@ def main() -> int:
 
     all_stats: dict[str, dict[str, object]] = {}
     case_max_scores: dict[str, int] = {}
+
+    # ── 采样逻辑 ──
+    # 收集所有 (case_dir, image) 对，按 --max-samples 随机抽取
+    case_images: dict[str, list[Path]] | None = None
+    if args.max_samples is not None and not args.skip_scoring:
+        import random
+        all_pairs: list[tuple[Path, Path]] = []  # (case_dir, image)
+        for case_dir in case_dirs:
+            if not (case_dir / "score.json").exists():
+                continue
+            imgs = sorted(
+                [p for p in case_dir.iterdir()
+                 if p.is_file() and p.suffix.lower() in SUPPORTED_SUFFIXES],
+                key=lambda f: f.name.lower(),
+            )
+            all_pairs.extend((case_dir, img) for img in imgs)
+
+        if args.max_samples < len(all_pairs):
+            sampled = random.sample(all_pairs, args.max_samples)
+            print(f"  Sampled {args.max_samples}/{len(all_pairs)} images", file=sys.stderr)
+        else:
+            sampled = all_pairs
+            print(f"  --max-samples={args.max_samples} >= total {len(all_pairs)}, using all", file=sys.stderr)
+
+        case_images = {}
+        for case_dir_s, img in sampled:
+            case_images.setdefault(case_dir_s.name, []).append(img)
+        # 确保每个 case 内无重复图片
+        for cn, imgs in case_images.items():
+            names = [i.name for i in imgs]
+            if len(names) != len(set(names)):
+                raise RuntimeError(f"Case {cn} 中存在重复采样图片: {names}")
 
     for case_dir in case_dirs:
         case_name = case_dir.name
@@ -528,11 +614,22 @@ def main() -> int:
             print(f"  Loading existing results for case {case_name} ...", file=sys.stderr)
             ai_results = load_existing_ai_scores(output_dir)
         else:
+            # 如果启用了采样，传入抽到的图片子集
+            imgs = case_images.get(case_name) if case_images is not None else None
+            if case_images is not None and imgs is None:
+                # 该 case 没有被抽到任何图片，跳过
+                continue
             print(f"  Running AI scoring for case {case_name} ({args.mode}) ...", file=sys.stderr)
             if args.mode == "direct":
-                ai_results = run_ai_scoring_direct(case_dir, output_dir, args.verbosity, args.strictness)
+                ai_results = run_ai_scoring_direct(
+                    case_dir, output_dir, args.verbosity, args.strictness, imgs,
+                    max_workers=args.concurrency,
+                )
             else:
-                ai_results = run_ai_scoring_two_step(case_dir, output_dir, args.verbosity, args.strictness)
+                ai_results = run_ai_scoring_two_step(
+                    case_dir, output_dir, args.verbosity, args.strictness, imgs,
+                    max_workers=args.concurrency,
+                )
 
         if not ai_results:
             print(f"  No AI scores for case {case_name}", file=sys.stderr)
@@ -582,6 +679,7 @@ def main() -> int:
             all_stats, case_max_scores, case_plots,
             args.mode, args.strictness,
             RESULTS_DIR / "report.md", overall_plot,
+            max_samples=args.max_samples,
         )
 
     return 0

@@ -54,6 +54,10 @@ def _build_root_parser() -> argparse.ArgumentParser:
         "--strictness", type=int, default=1, choices=[0, 1, 2],
         help="Strictness: 0=lenient, 1=mixed, 2=strict (default: 1)",
     )
+    drc.add_argument(
+        "--concurrency", type=int, default=1, metavar="N",
+        help="批量评分并发线程数 (default: 1)",
+    )
 
     return parser
 
@@ -128,6 +132,7 @@ def _cmd_direct(args: argparse.Namespace) -> int:
             output_dir=output_dir,
             verbosity=args.verbosity,
             strictness=args.strictness,
+            max_workers=args.concurrency,
         )
         print(json.dumps(summary, ensure_ascii=False, indent=2))
     else:
