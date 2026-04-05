@@ -1,47 +1,69 @@
-"""构建 judge 模块的 System / User prompt."""
+"""构建 judge 模块的 System / User prompt（同时支持文本和直接 VLM 评分）."""
 
 from __future__ import annotations
+
+from src.model.types import InputAsset
+from src.prompt import load_prompt
 
 from .types import ScoringItem, ScoringRubric
 
 
-_SYSTEM_PROMPT = """\
-Role: 你是一位经验丰富的物理竞赛阅卷专家。
-
-Task: 根据提供的评分标准，对学生手写答卷的转录文本进行逐项评分。
-
-Rules:
-1. 严格按照评分标准中的每一个评分点逐项给分。
-2. 每个评分点的得分为 0 到该项满分之间的整数，允许部分给分。
-3. 评分只依据学生答案的物理和数学内容是否正确，不考虑书写整洁度。
-4. 如果学生使用了与标准答案不同但等价正确的方法，应当给分。
-5. 如果标准答案提供了多种解法，识别学生使用的解法并按对应标准给分。
-6. 对于方程类评分点：学生写出的方程在物理含义和数学形式上与标准一致即可给分，\
-不要求完全一致的符号或排列，允许等价变形。
-7. 对于文字/讨论类评分点：学生给出了正确的物理解释或结论即可给分。
-8. 输出必须严格为 JSON 格式，不要添加任何额外文字。
-"""
-
-
 def build_judge_messages(
     rubric: ScoringRubric,
-    student_text: str,
+    student_text: str | None = None,
+    *,
+    assets: list[InputAsset] | None = None,
     verbosity: int = 1,
+    strictness: int = 1,
 ) -> list[dict[str, object]]:
-    """Construct the messages list for the OpenRouter chat completion call."""
-    user_text = _build_user_prompt(rubric, student_text, verbosity)
+    """Construct the messages list for the OpenRouter chat completion call.
+
+    当 *assets* 非空且 *student_text* 为 None 时进入 **direct 模式**
+    （VLM 直接读取图片评分），否则为文本评分模式。
+    """
+    direct_mode = assets is not None and student_text is None
+    prompts = load_prompt("judge")
+    system_prompt = prompts["direct_system"] if direct_mode else prompts["system"]
+
+    user_text = _build_user_prompt(rubric, student_text, verbosity, strictness, direct_mode, prompts)
+
+    if direct_mode:
+        content: list[dict[str, object]] = [{"type": "text", "text": user_text}]
+        for asset in assets:
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{asset.media_type};base64,{asset.base64_data}",
+                    },
+                }
+            )
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content},
+        ]
+
     return [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_text},
     ]
 
 
 def _build_user_prompt(
     rubric: ScoringRubric,
-    student_text: str,
+    student_text: str | None,
     verbosity: int,
+    strictness: int,
+    direct_mode: bool,
+    prompts: dict[str, object],
 ) -> str:
     sections: list[str] = []
+
+    # ── 0. 给分策略（strictness） ──
+    strictness_rules = prompts.get("strictness_rules", {})
+    rule_text = strictness_rules.get(strictness, strictness_rules.get(1, ""))
+    if rule_text:
+        sections.append(rule_text.strip())
 
     # ── 1. 题目描述 ──
     if rubric.problem_statement:
@@ -76,8 +98,11 @@ def _build_user_prompt(
     if rubric.solution_text:
         sections.append(f"## 标准解答（参考）\n\n{rubric.solution_text}")
 
-    # ── 4. 学生答案 ──
-    sections.append(f"## 学生答案\n\n{student_text}")
+    # ── 4. 学生答案（模式依赖） ──
+    if direct_mode:
+        sections.append(prompts["student_images_section"].strip())
+    else:
+        sections.append(f"## 学生答案\n\n{student_text}")
 
     # ── 5. 输出要求 ──
     output_spec = _build_output_spec(primary_items, verbosity)

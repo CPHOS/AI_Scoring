@@ -26,6 +26,15 @@ def _build_frontmatter(result: JudgingResult) -> str:
     lines.append(f'model: "{result.model}"')
     lines.append(f'provider: "{result.provider}"')
     lines.append(f'timestamp: "{datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}"')
+
+    # 批阅耗时
+    if result.submitted_at:
+        lines.append(f'submitted_at: "{result.submitted_at}"')
+    if result.completed_at:
+        lines.append(f'completed_at: "{result.completed_at}"')
+    if result.duration_seconds:
+        lines.append(f"duration_seconds: {result.duration_seconds}")
+
     lines.append(f"total_score: {result.total_score}")
     lines.append(f"max_score: {result.max_score}")
 

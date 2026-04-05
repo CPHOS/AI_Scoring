@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
 from typing import Any
 
 from src.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class OpenRouterClient:
@@ -34,16 +37,21 @@ class OpenRouterClient:
         for attempt in range(self._settings.max_retries + 1):
             request = urllib.request.Request(url=url, data=body, headers=headers, method="POST")
             try:
+                logger.debug("API 请求  model=%s  attempt=%d", self._settings.model, attempt + 1)
                 with urllib.request.urlopen(request, timeout=self._settings.timeout_seconds) as response:
-                    return json.loads(response.read().decode("utf-8"))
+                    result = json.loads(response.read().decode("utf-8"))
+                    logger.debug("API 响应  id=%s", result.get("id", "?"))
+                    return result
             except urllib.error.HTTPError as exc:
                 detail = _read_error_detail(exc)
                 last_error = RuntimeError(f"HTTP {exc.code}: {detail}")
+                logger.warning("API HTTP 错误 %d  attempt=%d: %s", exc.code, attempt + 1, detail[:200])
                 if attempt >= self._settings.max_retries:
                     break
                 time.sleep(min(2 ** attempt, 4))
             except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
                 last_error = exc
+                logger.warning("API 网络错误  attempt=%d: %s", attempt + 1, exc)
                 if attempt >= self._settings.max_retries:
                     break
                 time.sleep(min(2 ** attempt, 4))
@@ -57,3 +65,42 @@ def _read_error_detail(exc: urllib.error.HTTPError) -> str:
     except Exception:
         payload = ""
     return payload or exc.reason
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 响应解析工具函数
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def extract_text_content(payload: dict[str, Any]) -> str:
+    """从 OpenRouter chat completion 响应中提取纯文本内容."""
+    choices = payload.get("choices") or []
+    if not choices:
+        raise ValueError("OpenRouter response does not contain choices")
+    message = choices[0].get("message") or {}
+    content = message.get("content")
+    if not content:
+        raise ValueError("OpenRouter response does not contain message content")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict) and item.get("type") == "text":
+                parts.append(str(item.get("text", "")))
+        return "\n".join(part for part in parts if part.strip())
+    raise ValueError("Unsupported message content format")
+
+
+def extract_usage(raw_response: dict[str, object]) -> dict[str, object]:
+    """从 OpenRouter 响应中提取 usage/cost 数据."""
+    usage: dict[str, object] = {}
+    api_usage = raw_response.get("usage")
+    if isinstance(api_usage, dict):
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            if key in api_usage:
+                usage[key] = api_usage[key]
+    gen_id = raw_response.get("id")
+    if gen_id:
+        usage["generation_id"] = gen_id
+    return usage

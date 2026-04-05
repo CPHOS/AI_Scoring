@@ -54,3 +54,6 @@ class JudgingResult:
     provider: str = "openrouter"
     usage: dict[str, Any] = field(default_factory=dict)
     problem_title: str = ""
+    submitted_at: str = ""     # ISO 8601 提交时间
+    completed_at: str = ""     # ISO 8601 完成时间
+    duration_seconds: float = 0.0  # 批阅耗时（秒）

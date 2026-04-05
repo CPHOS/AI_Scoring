@@ -3,68 +3,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 
-from src.config import load_settings
-from src.client.openrouter import OpenRouterClient
 from src.model.types import TranscriptionResult
+from src.pipeline import Pipeline, PipelineContext, PipelineMode
 
-from .input_processing import load_inputs
-from .latex_normalizer import normalize_transcription
-from .prompt_builder import build_messages
-from .request_id import build_request_id
-from .response_parser import extract_text_content
+from .output import build_transcription_markdown
 from .validation import validate_transcription
 
 
 SUPPORTED_BATCH_SUFFIXES = {".jpg", ".jpeg", ".png", ".pdf"}
-
-
-def _extract_usage(raw_response: dict[str, object]) -> dict[str, object]:
-    """Extract usage/cost data from an OpenRouter API response."""
-    usage: dict[str, object] = {}
-    api_usage = raw_response.get("usage")
-    if isinstance(api_usage, dict):
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            if key in api_usage:
-                usage[key] = api_usage[key]
-    gen_id = raw_response.get("id")
-    if gen_id:
-        usage["generation_id"] = gen_id
-    return usage
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Markdown generation
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _build_frontmatter(result: TranscriptionResult, warnings: list[str]) -> str:
-    lines = ["---"]
-    lines.append(f"source_files: {json.dumps(result.source_files, ensure_ascii=False)}")
-    lines.append(f'request_id: "{result.request_id}"')
-    lines.append(f'model: "{result.model}"')
-    lines.append(f'provider: "{result.provider}"')
-    lines.append(f'timestamp: "{datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}"')
-
-    usage = result.usage
-    if usage:
-        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-            if key in usage:
-                lines.append(f"{key}: {usage[key]}")
-        if "generation_id" in usage:
-            lines.append(f'generation_id: "{usage["generation_id"]}"')
-
-    if warnings:
-        lines.append(f"warnings: {json.dumps(warnings, ensure_ascii=False)}")
-
-    lines.append("---")
-    return "\n".join(lines)
-
-
-def _build_markdown(result: TranscriptionResult, warnings: list[str]) -> str:
-    frontmatter = _build_frontmatter(result, warnings)
-    return f"{frontmatter}\n\n{result.transcription}\n"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -75,35 +23,15 @@ def run_transcription(
     input_paths: list[Path],
     output_path: Path | None = None,
 ) -> TranscriptionResult:
-    settings = load_settings()
-    assets = load_inputs(input_paths)
-    request_id = build_request_id(input_paths)
-    client = OpenRouterClient(settings)
-    messages = build_messages(assets)
-    raw_response = client.create_chat_completion(messages)
-    raw_text = extract_text_content(raw_response)
-    normalized = normalize_transcription(raw_text)
-    usage = _extract_usage(raw_response)
-
-    result = TranscriptionResult(
-        request_id=request_id,
-        transcription=normalized,
-        source_files=[a.filename for a in assets],
-        model=settings.model,
-        provider="openrouter",
-        usage=usage,
+    ctx = PipelineContext(
+        mode=PipelineMode.RECOGNIZE,
+        input_paths=input_paths,
+        output_path=output_path,
     )
-
-    warnings = validate_transcription(result.transcription)
-    if warnings:
-        for w in warnings:
-            print(f"  warning: {w}", file=sys.stderr)
-
-    if output_path is not None:
-        md_content = _build_markdown(result, warnings)
-        output_path.write_text(md_content, encoding="utf-8")
-
-    return result
+    result = Pipeline().run(ctx)
+    if result.error:
+        raise result.error
+    return result.transcription_result
 
 
 def run_batch_transcription(
@@ -211,7 +139,7 @@ def cli_main() -> int:
             output_path = Path(args.output).expanduser().resolve() if args.output else None
             result = run_transcription(input_paths, output_path=output_path)
             warnings = validate_transcription(result.transcription)
-            print(_build_markdown(result, warnings))
+            print(build_transcription_markdown(result, warnings))
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 1
